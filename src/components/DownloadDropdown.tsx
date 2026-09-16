@@ -15,6 +15,7 @@ interface Props {
 export default function DownloadDropdown({ soalList, filename, meta, disabled, googleFormsSoalList }: Props) {
   const [open, setOpen] = useState(false)
   const [loadingPdf, setLoadingPdf] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -28,19 +29,30 @@ export default function DownloadDropdown({ soalList, filename, meta, disabled, g
 
   const handleJson = () => {
     setOpen(false)
-    import('@/lib/downloadSoal').then(({ downloadJSON }) => {
-      downloadJSON(soalList, filename)
-    })
+    setErrorMsg(null)
+    import('@/lib/downloadSoal')
+      .then(({ downloadJSON }) => downloadJSON(soalList, filename))
+      .catch(e => {
+        console.error('JSON generation error:', e)
+        setErrorMsg('Gagal membuat JSON: ' + (e instanceof Error ? e.message : String(e)))
+      })
   }
 
   const handleGoogleForms = async () => {
     setOpen(false)
-    const { generateGoogleFormsScript } = await import('@/lib/downloadSoal')
-    await generateGoogleFormsScript(googleFormsSoalList ?? soalList, meta.judul)
+    setErrorMsg(null)
+    try {
+      const { generateGoogleFormsScript } = await import('@/lib/downloadSoal')
+      await generateGoogleFormsScript(googleFormsSoalList ?? soalList, meta.judul)
+    } catch (e) {
+      console.error('Google Forms script error:', e)
+      setErrorMsg('Gagal membuat script: ' + (e instanceof Error ? e.message : String(e)))
+    }
   }
 
   const handlePdf = async () => {
     setOpen(false)
+    setErrorMsg(null)
     setLoadingPdf(true)
     try {
       const [{ processSoal, convertImageToJpegDataUrl }, { pdf }, { default: SoalPdfDocument }] = await Promise.all([
@@ -71,6 +83,7 @@ export default function DownloadDropdown({ soalList, filename, meta, disabled, g
       URL.revokeObjectURL(url)
     } catch (e) {
       console.error('PDF generation error:', e)
+      setErrorMsg('Gagal membuat PDF: ' + (e instanceof Error ? e.message : String(e)))
     } finally {
       setLoadingPdf(false)
     }
@@ -138,6 +151,29 @@ export default function DownloadDropdown({ soalList, filename, meta, disabled, g
           <div className="px-3 pb-2 text-xs" style={{ color: 'var(--color-muted-foreground)', lineHeight: 1.4 }}>
             Download .gs → jalankan di<br />script.google.com
           </div>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div
+          role="alert"
+          onClick={() => setErrorMsg(null)}
+          className="rounded-md border px-3 py-2 text-xs shadow-md"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            right: 0,
+            zIndex: 50,
+            minWidth: 220,
+            maxWidth: 320,
+            cursor: 'pointer',
+            backgroundColor: '#fef2f2',
+            borderColor: '#fecaca',
+            color: '#991b1b',
+            lineHeight: 1.4,
+          }}
+        >
+          {errorMsg} (klik untuk tutup)
         </div>
       )}
     </div>

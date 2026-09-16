@@ -89,7 +89,10 @@ export async function convertImageToJpegDataUrl(url: string): Promise<string | n
 }
 
 export function processSoal(raw: SoalDownload[]): SoalProcessed[] {
-  return raw.map(s => ({
+  // Saring elemen kosong (null/undefined) DULU: satu lubang di larik soal
+  // membuat `s.id` melempar "s is undefined" dan merobohkan SELURUH download PDF
+  // (error tertelan senyap di pemanggil). Ditemukan pada ujian Qur'an.
+  return raw.filter(Boolean).map(s => ({
     id: s.id,
     tipe: s.tipe,
     tingkat_kesulitan: s.tingkat_kesulitan,
@@ -117,7 +120,7 @@ const TIPE_EXPORT_MAP: Record<string, string> = {
 }
 
 export function downloadJSON(soalList: SoalDownload[], filename: string): void {
-  const mapped = soalList.map(s => {
+  const mapped = soalList.filter(Boolean).map(s => {
     const tipe = TIPE_EXPORT_MAP[s.tipe] ?? s.tipe
     const pertanyaan = htmlToPlainText(s.pertanyaan)
     const gambar = extractImages(s.pertanyaan)[0]
@@ -175,6 +178,7 @@ export function sampleSoalByMatrix(
       const kesulitan = baseKey.slice(lastIdx + 1)
 
       const matching = soalList.filter(s =>
+        s &&
         s.bab_id_text === bab.bab_id_text &&
         s.tipe === tipe &&
         s.tingkat_kesulitan === kesulitan
@@ -203,7 +207,7 @@ export async function generateGoogleFormsScript(soalList: SoalDownload[], formTi
 
   // Konversi gambar ke base64 di browser agar Apps Script tidak perlu fetch network
   const soalData = await Promise.all(
-    soalList.map(async (s) => {
+    soalList.filter(Boolean).map(async (s) => {
       const imageUrls = extractImages(s.pertanyaan)
       const imagesBase64 = (
         await Promise.all(
