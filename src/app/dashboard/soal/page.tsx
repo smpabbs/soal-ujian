@@ -3,13 +3,17 @@
 import { useCallback, useEffect, useState } from "react"
 import { MathHtml } from "@/components/MathHtml"
 import { useRouter } from "next/navigation"
-import { ArrowLeft, ChevronDown, ChevronUp, Plus, Pencil, Trash2, Check, CircleHelp, Upload, X, AlertCircle, FileJson, Highlighter } from "lucide-react"
+import { ArrowLeft, ChevronDown, ChevronUp, Plus, Pencil, Trash2, Check, CircleHelp, Upload, X, AlertCircle, FileJson, Highlighter, MessageSquare, Send } from "lucide-react"
 import ThemeToggle from "@/components/ThemeToggle"
 import { supabase } from "@/lib/supabase"
 import Toast from "@/components/Toast"
 import RichTextEditor from "@/components/RichTextEditor"
 import ImageUpload from "@/components/ImageUpload"
 import DownloadDropdown from "@/components/DownloadDropdown"
+import {
+  ambilJumlahKomentar, ambilKomentarSoal, kirimKomentar, hapusKomentar,
+  susunUtas, waktuSingkat, pesanKomentar, ambilAksesSaya, type KomentarSoal,
+} from "@/lib/komentar"
 import { sampleSoalByMatrix } from "@/lib/downloadSoal"
 import { driver } from "driver.js"
 import "driver.js/dist/driver.css"
@@ -164,6 +168,18 @@ export default function SoalPage() {
   const [batchSaving, setBatchSaving] = useState(false)
   const [batchPasteText, setBatchPasteText] = useState("")
 
+  /* ── Komentar soal: lencana di daftar + utas di panel ── */
+  const [jumlahKomentar, setJumlahKomentar] = useState<Record<string, number>>({})
+  /** Soal yang panel komentarnya terbuka; satu per satu supaya layar tidak penuh. */
+  const [komentarSoalId, setKomentarSoalId] = useState<string | null>(null)
+  const [utasKomentar, setUtasKomentar] = useState<KomentarSoal[]>([])
+  const [memuatUtas, setMemuatUtas] = useState(false)
+  const [drafKomentar, setDrafKomentar] = useState("")
+  const [balasKe, setBalasKe] = useState<string | null>(null)
+  const [drafBalasan, setDrafBalasan] = useState("")
+  const [mengirimKomentar, setMengirimKomentar] = useState(false)
+  const [galatKomentar, setGalatKomentar] = useState("")
+
   /** Pindah ke satu tugas: muat matrix, bobot, dan soal milik ujian itu. */
   const pilihTugas = async (uid: string, tugas: TugasMenulis) => {
     setTugasAktif(tugas)
@@ -214,6 +230,16 @@ export default function SoalPage() {
       if (!u) { router.push("/login"); return }
       setUser(u)
 
+      // Gerbang kemampuan, bukan sekadar "sudah login". Guru pengampu yang
+      // masuk untuk berkomentar tidak punya jalur menulis; tanpa ini ia
+      // ditolak database satu per satu tanpa penjelasan.
+      const akses = await ambilAksesSaya().catch(() => null)
+      if (!akses?.bisa_menulis) {
+        setToast({ message: "Halaman ini untuk penulis soal. Anda bisa memberi komentar lewat menu Komentar.", type: "info" })
+        setTimeout(() => router.push("/dashboard"), 1500)
+        return
+      }
+
       const { data: profile } = await supabase
         .from("profiles")
         .select("nama")
@@ -254,7 +280,7 @@ export default function SoalPage() {
     if (!idUjian) return {}
     const { data } = await supabase
       .from("bank_soal")
-      .select("id,pertanyaan,tipe,tingkat_kesulitan,bobot,bab_id_text,created_at,pilihan,pilihan_gambar,status,revision_notes,highlights")
+      .select("id,pertanyaan,tipe,tingkat_kesulitan,bobot,bab_id_text,created_at,pilihan,pilihan_gambar,status,revision_notes,highlights,gambar_url,jawaban_benar,rubrik")
       .eq("guru_id", uid)
       .eq("ujian_id", idUjian)
       .order("created_at", { ascending: true })
@@ -267,6 +293,15 @@ export default function SoalPage() {
         stats[k] = (stats[k] || 0) + 1
       })
       setSoalStats(stats)
+
+      // Lencana komentar dimuat sekali per daftar. Kegagalan di sini tidak boleh
+      // menjatuhkan halaman — soal tetap bisa dibaca dan diedit.
+      try {
+        setJumlahKomentar(await ambilJumlahKomentar(data.map((s: any) => s.id)))
+      } catch (e) {
+        console.error("Gagal memuat jumlah komentar:", e)
+        setJumlahKomentar({})
+      }
     }
     return stats
   }
@@ -593,8 +628,7 @@ export default function SoalPage() {
   }
 
   const handleDeleteSoal = async (soalId: string) => {
-    if (!confirm("Yakin hapus soal ini?")) return
-    // .select() wajib. Policy soal_delete_own_draft hanya mengizinkan status
+    if (!confirm("Yakin hapus soal ini?")) return    // .select() wajib. Policy soal_delete_own_draft hanya mengizinkan status
     // 'draft', sedangkan tombol hapus juga aktif untuk soal 'needs_revision' —
     // tanpa pemeriksaan ini soal lenyap dari layar, tidak terhapus di basis
     // data, lalu muncul lagi begitu halaman dimuat ulang.
@@ -616,6 +650,56 @@ export default function SoalPage() {
       stats[k] = (stats[k] || 0) + 1
     })
     setSoalStats(stats)
+  }
+
+  /* ── Komentar: muat, kirim, balas, hapus ── */
+
+  const bukaKomentar = async (soalId: string) => {
+    if (komentarSoalId === soalId) { setKomentarSoalId(null); return }
+    setKomentarSoalId(soalId)
+    setUtasKomentar([])
+    setDrafKomentar("")
+    setDrafBalasan("")
+    setBalasKe(null)
+    setGalatKomentar("")
+    setMemuatUtas(true)
+    try {
+      setUtasKomentar(await ambilKomentarSoal(soalId))
+    } catch (e) {
+      setGalatKomentar(pesanKomentar(e))
+    } finally {
+      setMemuatUtas(false)
+    }
+  }
+
+  const kirimKomentarBaru = async (soalId: string, parentId: string | null) => {
+    const isi = (parentId ? drafBalasan : drafKomentar).trim()
+    if (!isi) return
+    setMengirimKomentar(true)
+    setGalatKomentar("")
+    try {
+      await kirimKomentar(soalId, isi, parentId)
+      if (parentId) { setDrafBalasan(""); setBalasKe(null) } else { setDrafKomentar("") }
+      const rows = await ambilKomentarSoal(soalId)
+      setUtasKomentar(rows)
+      setJumlahKomentar(prev => ({ ...prev, [soalId]: rows.length }))
+    } catch (e) {
+      setGalatKomentar(pesanKomentar(e))
+    } finally {
+      setMengirimKomentar(false)
+    }
+  }
+
+  const hapusKomentarSoal = async (soalId: string, id: string) => {
+    if (!confirm("Hapus komentar ini? Balasannya ikut terhapus.")) return
+    try {
+      await hapusKomentar(id)
+      const rows = await ambilKomentarSoal(soalId)
+      setUtasKomentar(rows)
+      setJumlahKomentar(prev => ({ ...prev, [soalId]: rows.length }))
+    } catch (e) {
+      setGalatKomentar(pesanKomentar(e))
+    }
   }
 
   const handleKirimValidator = async () => {
@@ -2002,6 +2086,128 @@ export default function SoalPage() {
                               <span className="font-semibold">Catatan revisi:</span> {soal.revision_notes}
                             </div>
                           )}
+
+                          {/* Komentar guru pengampu mapel */}
+                          <button
+                            onClick={() => bukaKomentar(soal.id)}
+                            className="mt-2.5 flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-full"
+                            style={{
+                              backgroundColor: komentarSoalId === soal.id ? "var(--pp-ink)" : "var(--pp-bg)",
+                              color: komentarSoalId === soal.id ? "white" : "var(--pp-ink)",
+                              border: "1px solid var(--pp-ink)",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            {jumlahKomentar[soal.id] > 0
+                              ? `${jumlahKomentar[soal.id]} komentar`
+                              : "Komentar"}
+                            {komentarSoalId === soal.id ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                          </button>
+
+                          {komentarSoalId === soal.id && (
+                            <div
+                              className="mt-2 rounded-[14px] p-3 space-y-3"
+                              style={{ backgroundColor: "var(--pp-bg)", border: "1.5px solid var(--pp-line)" }}
+                            >
+                              {memuatUtas && (
+                                <div className="text-xs" style={{ color: "var(--pp-muted)" }}>Memuat komentar...</div>
+                              )}
+
+                              {galatKomentar && (
+                                <div className="text-xs px-3 py-2 rounded-lg flex items-start gap-1.5"
+                                     style={{ backgroundColor: "#FFE4E4", border: "1px solid #FECACA", color: "#B91C1C" }}>
+                                  <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                                  {galatKomentar}
+                                </div>
+                              )}
+
+                              {!memuatUtas && utasKomentar.length === 0 && !galatKomentar && (
+                                <div className="text-xs" style={{ color: "var(--pp-muted)" }}>
+                                  Belum ada komentar dari guru lain. Komentar akan muncul di sini.
+                                </div>
+                              )}
+
+                              {susunUtas(utasKomentar).map(({ induk, balasan }) => (
+                                <div key={induk.id} className="rounded-[12px] p-2.5"
+                                     style={{ backgroundColor: "var(--pp-card)", border: "1px solid var(--pp-line)" }}>
+                                  <BarisKomentar k={induk} onHapus={() => hapusKomentarSoal(soal.id, induk.id)} />
+                                  {balasan.length > 0 && (
+                                    <div className="mt-2 pl-3 space-y-2" style={{ borderLeft: "2px solid var(--pp-line)" }}>
+                                      {balasan.map(b => (
+                                        <BarisKomentar key={b.id} k={b} onHapus={() => hapusKomentarSoal(soal.id, b.id)} />
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {balasKe === induk.id ? (
+                                    <div className="mt-2 space-y-1.5">
+                                      <textarea
+                                        value={drafBalasan}
+                                        onChange={e => setDrafBalasan(e.target.value)}
+                                        rows={2}
+                                        maxLength={2000}
+                                        placeholder="Tulis balasan..."
+                                        style={textareaKomentar}
+                                      />
+                                      <div className="flex gap-2">
+                                        <button
+                                          onClick={() => kirimKomentarBaru(soal.id, induk.id)}
+                                          disabled={mengirimKomentar || !drafBalasan.trim()}
+                                          className="text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1"
+                                          style={tombolKirimKomentar(mengirimKomentar || !drafBalasan.trim())}
+                                        >
+                                          <Send className="w-3 h-3" />
+                                          {mengirimKomentar ? "Mengirim..." : "Kirim balasan"}
+                                        </button>
+                                        <button
+                                          onClick={() => { setBalasKe(null); setDrafBalasan("") }}
+                                          className="text-xs px-2 py-1.5"
+                                          style={{ color: "var(--pp-muted)", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}
+                                        >
+                                          Batal
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => { setBalasKe(induk.id); setDrafBalasan(""); setGalatKomentar("") }}
+                                      className="text-xs mt-1.5"
+                                      style={{ color: "var(--pp-primary)", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}
+                                    >
+                                      Balas
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+
+                              <div>
+                                <textarea
+                                  value={drafKomentar}
+                                  onChange={e => setDrafKomentar(e.target.value)}
+                                  rows={2}
+                                  maxLength={2000}
+                                  placeholder="Tanggapi komentar untuk soal Anda..."
+                                  style={textareaKomentar}
+                                />
+                                <div className="flex items-center justify-between mt-1.5">
+                                  <span className="text-xs" style={{ color: "var(--pp-muted)" }}>
+                                    {drafKomentar.length}/2000
+                                  </span>
+                                  <button
+                                    onClick={() => kirimKomentarBaru(soal.id, null)}
+                                    disabled={mengirimKomentar || !drafKomentar.trim()}
+                                    className="text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1"
+                                    style={tombolKirimKomentar(mengirimKomentar || !drafKomentar.trim())}
+                                  >
+                                    <Send className="w-3 h-3" />
+                                    Kirim
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {/* Edit/Delete */}
@@ -2333,3 +2539,57 @@ export default function SoalPage() {
     </div>
   )
 }
+
+/* ── Potongan UI komentar (dipakai di panel dalam daftar soal) ── */
+
+function BarisKomentar({ k, onHapus }: { k: KomentarSoal; onHapus: () => void }) {
+  return (
+    <div className="text-xs">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="font-semibold" style={{ color: "var(--pp-ink)" }}>{k.nama}</span>
+        <span
+          className="px-1.5 py-0.5 rounded-full"
+          style={{ backgroundColor: "var(--pp-bg)", color: "var(--pp-ink-2)", border: "1px solid var(--pp-line)", fontSize: 10 }}
+        >
+          {k.peran}
+        </span>
+        <span style={{ color: "var(--pp-muted)" }}>{waktuSingkat(k.created_at)}</span>
+        {k.boleh_hapus && (
+          <button
+            onClick={onHapus}
+            title="Hapus komentar"
+            className="ml-auto hover:opacity-60 transition-opacity"
+            style={{ color: "#B91C1C", background: "none", border: "none", cursor: "pointer", padding: 2 }}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+      <p className="mt-1 whitespace-pre-wrap break-words" style={{ color: "var(--pp-ink)", lineHeight: 1.55 }}>
+        {k.isi}
+      </p>
+    </div>
+  )
+}
+
+const textareaKomentar: React.CSSProperties = {
+  width: "100%",
+  padding: "8px 10px",
+  borderRadius: 10,
+  border: "1.5px solid var(--pp-ink)",
+  backgroundColor: "var(--pp-card)",
+  fontSize: 12,
+  color: "var(--pp-ink)",
+  outline: "none",
+  fontFamily: "inherit",
+  resize: "vertical",
+  boxSizing: "border-box",
+}
+
+const tombolKirimKomentar = (nonaktif: boolean): React.CSSProperties => ({
+  backgroundColor: nonaktif ? "var(--pp-bg)" : "var(--pp-primary)",
+  color: nonaktif ? "var(--pp-muted)" : "white",
+  border: "none",
+  cursor: nonaktif ? "not-allowed" : "pointer",
+  fontFamily: "inherit",
+})

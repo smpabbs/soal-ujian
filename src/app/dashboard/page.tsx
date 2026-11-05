@@ -7,10 +7,11 @@ import {
   User, LayoutGrid, PenSquare, FileText,
   CheckSquare, Settings, Users, Bell,
   AlertCircle, CheckCircle, Lightbulb,
-  LogOut, Lock, BookOpen, ArrowRight,
+  LogOut, Lock, BookOpen, ArrowRight, MessageSquare,
 } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 import { ambilTugasMenulis, ambilUjianPsat, labelUjian, KESULITAN_OPTIONS, KESULITAN_LABELS, KESULITAN_LABELS_PANJANG, type PatokanUjianRow, type TugasMenulis, type UjianPsat } from "@/lib/ujian"
+import { ambilAksesSaya, type AksesSaya } from "@/lib/komentar"
 import ThemeToggle from "@/components/ThemeToggle"
 
 const TIPE_OPTIONS     = ["pilgan", "ceklist", "essay", "isian_singkat", "benar_salah", "pilgan_kategori"]
@@ -37,6 +38,7 @@ const ADMIN_MENU_COLORS = [
   { bg: "#FFE3D0", iconBg: "#FFB68A", iconColor: "#6B2D00" }, // peach — Mapel
   { bg: "#ECE4FF", iconBg: "#C9B8FF", iconColor: "#2E1A6B" }, // lilac — Matrix
   { bg: "#FFD9E6", iconBg: "#FFA6C5", iconColor: "#6B0E33" }, // pink  — Users
+  { bg: "#D8ECFF", iconBg: "#9CC8F8", iconColor: "#123C6B" }, // blue  — Komentar
 ]
 
 const STAT_VARIANTS = [
@@ -64,6 +66,8 @@ export default function DashboardPage() {
   const [noAccessEmail, setNoAccessEmail]       = useState("")
   const [hasValidatorProfile, setHasValidatorProfile] = useState(false)
   const [hasMatrix, setHasMatrix]               = useState(false)
+  /** Kemampuan dari psat.akses_saya(); null berarti belum selesai dicek. */
+  const [akses, setAkses]                       = useState<AksesSaya | null>(null)
   const [submittedCount, setSubmittedCount]     = useState(0)
   const [approvedCount, setApprovedCount]       = useState(0)
   const [revisionCount, setRevisionCount]       = useState(0)
@@ -81,51 +85,48 @@ export default function DashboardPage() {
       const { data: { user: u } } = await supabase.auth.getUser()
       if (!u) { router.push("/login"); return }
 
-      const { data: profileData, error: profileQueryError } = await supabase
-        .from("profiles").select("role").eq("id", u.id).maybeSingle()
-      if (profileQueryError) console.error("Query profile error:", profileQueryError)
+      // Gerbang keanggotaan tunggal. Dulu dashboard bertanya langsung ke view
+      // psat.profiles; view itu sengaja hanya memuat penulis/validator/admin,
+      // sehingga guru pengampu mapel — yang kini boleh masuk untuk memberi
+      // komentar — akan ditolak di sini walau berhak. psat.akses_saya()
+      // menjawab pertanyaan yang sebenarnya: "boleh masuk atau tidak, dan
+      // boleh apa saja". Nol baris = tidak berhak.
+      let aksesSaya: AksesSaya | null = null
+      try {
+        aksesSaya = await ambilAksesSaya()
+      } catch (e) {
+        console.error("Gagal memeriksa akses PSAT:", e)
+      }
 
-      // Sejak identitas PSAT disatukan dengan LMS, keanggotaan ditentukan flag
-      // di public.profiles yang dinyalakan admin — profil tidak lagi dibuat
-      // sendiri saat login pertama. Tanpa gerbang ini dashboard tetap terbuka
-      // tapi semua query balik kosong, dan guru tidak tahu kenapa.
-      //
-      // ⚠️ Kondisi ini GENERIK: view psat.profiles mengembalikan nol baris.
-      // Sebabnya bisa flag penulis mati, flag VALIDATOR mati, status guru bukan
-      // 'aktif', atau akun @psat.com warisan aplikasi lama yang tak punya baris
-      // di public.profiles sejak cutover identitas 21 Agu 2026. Pesannya dulu
-      // menyebut "penulis soal" saja — menyuruh admin menyalakan izin yang salah
-      // untuk validator, lewat toggle yang sudah tidak ada lagi di LMS.
-      if (!profileData) {
+      if (!aksesSaya) {
         setNoAccessEmail(u.email || "")
         setNoAccess(true)
         setLoading(false)
         return
       }
 
-      const { data: fullProfile } = await supabase
-        .from("profiles").select("nama, role, no_hp, kelas").eq("id", u.id).maybeSingle()
-
+      setAkses(aksesSaya)
       setUser({
-        id: u.id, email: u.email || "",
-        nama: u.user_metadata?.nama || fullProfile?.nama || null,
+        id: u.id,
+        email: u.email || "",
+        nama: aksesSaya.nama || u.user_metadata?.nama || null,
         username: u.user_metadata?.username || null,
-        role: fullProfile?.role || "guru",
+        role: aksesSaya.role,
       })
 
       const { data: guruData } = await supabase
         .from("psat_guru_data").select("bank, no_rekening, unit_sekolah, mapel_id").eq("profile_id", u.id).maybeSingle()
 
       // Mapel & kelas tidak lagi bagian dari profil — keduanya dari penugasan LMS
-      const namaOk = !!fullProfile?.nama && fullProfile.nama !== u.id
-      setHasProfile(namaOk && !!fullProfile?.no_hp &&
+      const namaOk = !!aksesSaya.nama && aksesSaya.nama !== u.id
+      setHasProfile(namaOk && !!aksesSaya.no_hp &&
         !!guruData?.unit_sekolah && !!guruData?.bank && !!guruData?.no_rekening)
 
-      const vRole = fullProfile?.role || "guru"
+      const vRole = aksesSaya.role
       if (vRole === "validator" || vRole === "admin") {
         const { data: vGuruData } = await supabase
           .from("psat_guru_data").select("bank, no_rekening, unit_sekolah").eq("profile_id", u.id).maybeSingle()
-        setHasValidatorProfile(namaOk && !!fullProfile?.no_hp && !!vGuruData?.unit_sekolah && !!vGuruData?.bank && !!vGuruData?.no_rekening)
+        setHasValidatorProfile(namaOk && !!aksesSaya.no_hp && !!vGuruData?.unit_sekolah && !!vGuruData?.bank && !!vGuruData?.no_rekening)
       }
 
       let validatorMapelIds: string[] | null = null
@@ -135,12 +136,18 @@ export default function DashboardPage() {
         validatorMapelIds = vmRows?.map((r: any) => r.mapel_id) ?? []
       }
 
-      // Tugas menulis menentukan ujian mana yang dihitung di halaman ini
+      // Tugas menulis menentukan ujian mana yang dihitung di halaman ini.
+      // Hanya dimuat bila memang boleh menulis: guru pengampu yang mengajar
+      // mapel tanpa penunjukan juga akan mendapat baris dari get_tugas_menulis()
+      // (RPC itu membuka "belum ada penunjukan"), dan tanpa gerbang ini ia
+      // melihat kartu tugas menulis yang tak bisa ia kerjakan.
       let tugas: TugasMenulis[] = []
-      try {
-        tugas = await ambilTugasMenulis()
-      } catch (e) {
-        console.error("Gagal memuat tugas menulis:", e)
+      if (aksesSaya.bisa_menulis) {
+        try {
+          tugas = await ambilTugasMenulis()
+        } catch (e) {
+          console.error("Gagal memuat tugas menulis:", e)
+        }
       }
       setTugasList(tugas)
       const ujianIds = tugas.map(t => t.ujian_id)
@@ -273,14 +280,22 @@ export default function DashboardPage() {
             </p>
           ) : (
             <p className="mb-6" style={{ color: "var(--pp-muted)", fontSize: "14px", lineHeight: 1.55 }}>
-              Login Anda berhasil, tetapi akun ini belum diberi peran di PSAT.
-              Minta admin membuka <strong>LMS &rarr; Role Guru</strong>, kolom <strong>Soal PSAT</strong>,
-              lalu menyalakan <strong>Validasi</strong> (untuk validator soal). Pastikan juga status
-              Anda masih <strong>aktif</strong>. Sesudah itu masuk lagi.
-              <br />
+              Login Anda berhasil, tetapi akun ini belum punya alasan untuk masuk PSAT.
+              Ada tiga jalan, dan admin cukup memilih satu sesuai peran Anda:
+              <br /><br />
+              <strong>Sebagai guru pengampu</strong> — pastikan Anda punya minimal satu
+              penugasan mengajar di <strong>LMS &rarr; Kelola Guru &rarr; Kelas mengajar</strong>.
+              Dengan itu Anda otomatis bisa masuk dan memberi komentar soal.
+              <br /><br />
+              <strong>Sebagai penulis soal</strong> — minta admin menunjuk Anda di halaman
+              <strong> Patokan Soal</strong>. Izin tulis menyala sendiri saat ditunjuk.
+              <br /><br />
+              <strong>Sebagai validator</strong> — minta admin menyalakan <strong>Validasi</strong>
+              pada kolom <strong>Soal PSAT</strong> di LMS &rarr; Role Guru.
+              <br /><br />
               <span style={{ fontSize: "13px" }}>
-                Izin <strong>Tulis</strong> tidak dinyalakan dari sana — ia menyala sendiri saat Anda
-                ditunjuk sebagai penulis soal di halaman Patokan.
+                Pastikan juga status akun Anda masih <strong>aktif</strong>. Sesudah diubah,
+                keluar lalu masuk lagi.
               </span>
             </p>
           )}
@@ -322,6 +337,15 @@ export default function DashboardPage() {
   const isAdmin   = userRole === "admin"
   const isValidator = userRole === "validator"
 
+  // Kemampuan, bukan peran, yang menentukan menu. Guru pengampu mapel yang
+  // tidak ditunjuk menulis tetap mendapat langkah Komentar (dan tidak melihat
+  // langkah menulis yang akan ditolak database).
+  const bisaMenulis      = !!akses?.bisa_menulis
+  const bisaMemvalidasi  = !!akses?.bisa_memvalidasi
+  const bisaMengomentari = !!akses?.bisa_mengomentari
+  /** Mapel yang punya soal di siklus aktif. Kosong = menu Komentar hanya akan menampilkan halaman kosong. */
+  const adaMapelKomentar = (akses?.mapel_ids?.length ?? 0) > 0
+
   const avatarCol = getAvatarColors(user?.nama)
   const displayName = user?.nama || user?.username || userRole
 
@@ -330,7 +354,9 @@ export default function DashboardPage() {
     ? { label: "Admin", bg: "#FFD9E6", color: "#6B0E33", border: "#FFA6C5" }
     : isValidator
     ? { label: "Validator", bg: "#DAF5E7", color: "#0E4A2F", border: "#9DE3C4" }
-    : { label: "Guru", bg: "#ECE4FF", color: "#2E1A6B", border: "#C9B8FF" }
+    : bisaMenulis
+    ? { label: "Guru Penulis", bg: "#ECE4FF", color: "#2E1A6B", border: "#C9B8FF" }
+    : { label: "Guru Pengampu", bg: "#D8ECFF", color: "#123C6B", border: "#9CC8F8" }
 
   /* ── Admin/Validator menu items ── */
   const adminMenuItems = [
@@ -346,12 +372,20 @@ export default function DashboardPage() {
     {
       icon: <CheckSquare className="w-5 h-5" />,
       label: "Validasi",
-      desc: isAdmin || hasValidatorProfile ? "Review & approve soal" : "Lengkapi profil dulu",
+      desc: bisaMemvalidasi ? "Review & approve soal" : "Lengkapi profil dulu",
       done: false,
-      locked: !isAdmin && !hasValidatorProfile,
+      locked: !bisaMemvalidasi,
       path: "/dashboard/validasi",
       ci: ADMIN_MENU_COLORS[0],
     },
+    ...(bisaMengomentari && adaMapelKomentar ? [{
+      icon: <MessageSquare className="w-5 h-5" />,
+      label: "Komentar Soal",
+      desc: "Baca & tanggapi soal semua mapel",
+      done: false, locked: false,
+      path: "/dashboard/komentar",
+      ci: ADMIN_MENU_COLORS[5],
+    }] : []),
     ...(isAdmin ? [
       {
         icon: <Settings className="w-5 h-5" />,
@@ -390,27 +424,38 @@ export default function DashboardPage() {
 
   /* ── Guru steps ── */
   const guruSteps = [
-    {
-      step: 1, icon: <User className="w-5 h-5" />,
-      label: "Profil", desc: hasProfile ? "Data diri sudah lengkap" : "Data diri (WA, Bank, Rekening)",
-      done: hasProfile, locked: false, path: "/dashboard/profile", ci: GURU_STEP_COLORS[0],
-    },
-    {
-      step: 2, icon: <LayoutGrid className="w-5 h-5" />,
-      label: "Matrix", desc: hasProfile ? "Pemetaan jumlah soal" : "Lengkapi profil dulu",
-      done: hasMatrix, locked: !hasProfile, path: "/dashboard/matrix", ci: GURU_STEP_COLORS[1],
-    },
-    {
-      step: 3, icon: <PenSquare className="w-5 h-5" />,
-      label: "Soal", desc: hasMatrix ? "Input soal ujian" : "Selesaikan matrix dulu",
-      done: false, locked: !hasMatrix, path: "/dashboard/soal", ci: GURU_STEP_COLORS[2],
-    },
-    {
-      step: 4, icon: <FileText className="w-5 h-5" />,
-      label: "Dokumen", desc: "Kisi-kisi & Glossary",
-      done: false, locked: false, path: "/dashboard/dokumen", ci: GURU_STEP_COLORS[3],
-    },
+    ...(bisaMenulis ? [
+      {
+        step: 1, icon: <User className="w-5 h-5" />,
+        label: "Profil", desc: hasProfile ? "Data diri sudah lengkap" : "Data diri (WA, Bank, Rekening)",
+        done: hasProfile, locked: false, path: "/dashboard/profile", ci: GURU_STEP_COLORS[0],
+      },
+      {
+        step: 2, icon: <LayoutGrid className="w-5 h-5" />,
+        label: "Matrix", desc: hasProfile ? "Pemetaan jumlah soal" : "Lengkapi profil dulu",
+        done: hasMatrix, locked: !hasProfile, path: "/dashboard/matrix", ci: GURU_STEP_COLORS[1],
+      },
+      {
+        step: 3, icon: <PenSquare className="w-5 h-5" />,
+        label: "Soal", desc: hasMatrix ? "Input soal ujian" : "Selesaikan matrix dulu",
+        done: false, locked: !hasMatrix, path: "/dashboard/soal", ci: GURU_STEP_COLORS[2],
+      },
+      {
+        step: 4, icon: <FileText className="w-5 h-5" />,
+        label: "Dokumen", desc: "Kisi-kisi & Glossary",
+        done: false, locked: false, path: "/dashboard/dokumen", ci: GURU_STEP_COLORS[3],
+      },
+    ] : []),
+    ...(bisaMengomentari && adaMapelKomentar ? [{
+      step: bisaMenulis ? 5 : 1, icon: <MessageSquare className="w-5 h-5" />,
+      label: "Komentar",
+      desc: "Beri masukan soal mapel Anda, dari draft sampai approved",
+      done: false, locked: false, path: "/dashboard/komentar", ci: ADMIN_MENU_COLORS[5],
+    }] : []),
   ]
+
+  /* ── Tidak ada langkah sama sekali (guru tanpa mapel di siklus aktif) ── */
+  const tidakAdaLangkah = guruSteps.length === 0
 
   /* ── Stat cards for guru ── */
   const statCards = [
@@ -512,7 +557,7 @@ export default function DashboardPage() {
             <p className="mt-0.5 text-sm" style={{ color: "var(--pp-muted)" }}>{user?.email}</p>
 
             {/* Incomplete profile warning */}
-            {!isAdmin && !isValidator && !hasProfile && (
+            {bisaMenulis && !isAdmin && !isValidator && !hasProfile && (
               <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
                    style={{ backgroundColor: "#FFE3D0", border: "1px solid var(--pp-peach)", color: "#6B2D00" }}>
                 <AlertCircle className="w-4 h-4 shrink-0" />
@@ -562,7 +607,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Guru: revision / approved notifications ── */}
-        {!isAdmin && !isValidator && (revisionCount > 0 || approvedCount > 0) && (
+        {bisaMenulis && !isAdmin && !isValidator && (revisionCount > 0 || approvedCount > 0) && (
           <div className="flex gap-3 flex-wrap">
             {revisionCount > 0 && (
               <button
@@ -652,9 +697,21 @@ export default function DashboardPage() {
                 </span>
                 <div style={{ flex: 1, height: "1px", backgroundColor: "var(--pp-line)" }} />
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {guruSteps.map(({ step, icon, label, desc, done, locked, path, ci }) => (
-                  <button
+              {tidakAdaLangkah ? (
+                <div className="rounded-[18px] p-5"
+                     style={{ backgroundColor: "var(--pp-card)", border: "1.5px solid var(--pp-ink)" }}>
+                  <div className="font-semibold text-sm mb-1" style={{ color: "var(--pp-ink)" }}>
+                    Belum ada pekerjaan untuk siklus ini
+                  </div>
+                  <p className="text-xs leading-relaxed" style={{ color: "var(--pp-ink-2)" }}>
+                    Anda sudah bisa masuk. Menulis soal dan memberi komentar akan terbuka
+                    begitu admin menetapkan penugasan untuk Anda pada siklus ujian yang aktif —
+                    atau mengaktifkan siklus yang sudah berisi soal.
+                  </p>
+                </div>
+              ) : (
+              <div className={`grid grid-cols-2 gap-4 ${guruSteps.length > 4 ? "md:grid-cols-5" : "md:grid-cols-4"}`}>
+                {guruSteps.map(({ step, icon, label, desc, done, locked, path, ci }) => (                  <button
                     key={label}
                     onClick={() => goTo(path, locked, label === "Soal")}
                     disabled={locked}
@@ -695,6 +752,7 @@ export default function DashboardPage() {
                   </button>
                 ))}
               </div>
+              )}
             </div>
 
             {/* ── Tugas menulis (satu kartu per ujian) ── */}
@@ -781,7 +839,7 @@ export default function DashboardPage() {
             )}
 
             {/* Tips */}
-            {!hasMatrix && (
+            {bisaMenulis && !hasMatrix && (
               <div className="flex items-start gap-3 px-4 py-3 rounded-[14px]"
                    style={{ backgroundColor: "#FFF5C6", border: "1.5px solid var(--pp-lemon)" }}>
                 <Lightbulb className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#C99A14" }} />
@@ -792,6 +850,7 @@ export default function DashboardPage() {
             )}
 
             {/* ── Stat cards ── */}
+            {bisaMenulis && (
             <div>
               <div className="mb-4 flex items-center gap-2">
                 <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--pp-muted)" }}>
@@ -827,9 +886,10 @@ export default function DashboardPage() {
                 ))}
               </div>
             </div>
+            )}
 
             {/* ── Progress bank soal ── */}
-            {targetBank > 0 && (
+            {bisaMenulis && targetBank > 0 && (
               <div className="rounded-[18px] shadow-hard-md p-5"
                    style={{ backgroundColor: "var(--pp-card)", border: "1.5px solid var(--pp-ink)" }}>
                 <div className="flex justify-between items-center mb-3">

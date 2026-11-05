@@ -24,6 +24,7 @@ import {
   type TugasMenulis,
   type BabUjian,
 } from "@/lib/ujian"
+import { ambilAksesSaya } from "@/lib/komentar"
 
 interface Bab {
   /** Kunci lokal = bab_id_text; matrixData masih dikunci dengan ini. */
@@ -200,6 +201,15 @@ export default function MatrixPage() {
       const { data: { user: u } } = await supabase.auth.getUser()
       if (!u) { router.push("/login"); return }
       setUser(u)
+
+      // Matrix hanya milik penulis. Guru pengampu yang masuk untuk berkomentar
+      // dialihkan ke sana, bukan dibiarkan menekan simpan yang akan ditolak.
+      const akses = await ambilAksesSaya().catch(() => null)
+      if (!akses?.bisa_menulis) {
+        showToast("Halaman ini untuk penulis soal. Anda bisa memberi komentar lewat menu Komentar.", "info")
+        setTimeout(() => router.push("/dashboard"), 1500)
+        return
+      }
 
       const { data: profileData } = await supabase
         .from("profiles")
