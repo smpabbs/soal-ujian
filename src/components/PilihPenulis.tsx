@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { Search, Check, X, Loader2, ChevronDown } from "lucide-react"
 import { cariCalonPenulis, pesanError, type CalonPenulis } from "@/lib/ujian"
 
@@ -10,6 +11,22 @@ const DEBOUNCE_MS = 200
 const MIN_HURUF = 2
 /** Sama dengan batas RPC. Populasi guru 200, jadi praktis tidak pernah kena. */
 const BATAS_CARI = 200
+
+/** Lebar & tinggi maksimum panel dropdown. */
+const PANEL_WIDTH = 280
+const PANEL_MAX_HEIGHT = 320
+/** Jarak panel dari tombol pemicu. */
+const PANEL_GAP = 4
+/** Perkiraan tinggi bilah pencarian agar daftar tidak terpotong panel. */
+const TINGGI_CARI = 38
+
+interface PosisiPanel {
+  left: number
+  width: number
+  top?: number
+  bottom?: number
+  maxHeight: number
+}
 
 interface Props {
   ujianId: string
@@ -46,13 +63,48 @@ export default function PilihPenulis({ ujianId, calonAwal, disabled, onPilih }: 
   const [galat, setGalat] = useState<string | null>(null)
 
   const wadahRef = useRef<HTMLDivElement>(null)
+  const tombolRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   /** Nomor permintaan terakhir yang dikirim — balasan lain diabaikan. */
   const seqRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  /** Koordinat panel (position: fixed). Dirender lewat portal agar tidak
+   *  terpotong `overflow: hidden` pembungkus tabel maupun `overflow-x-auto`
+   *  halaman — dulu dropdown ujian paling bawah hilang di balik tepi tabel. */
+  const [posisi, setPosisi] = useState<PosisiPanel | null>(null)
+
   const terpilih = useMemo(() => calonAwal.find(c => c.ditunjuk), [calonAwal])
   const sedangMencari = q.trim().length >= MIN_HURUF
+
+  /**
+   * Tempatkan panel di bawah tombol; bila sisa ruang di bawah tidak cukup
+   * (ujian paling bawah), balik ke atas tombol. Tinggi panel ikut ruang yang
+   * ada supaya daftar tetap bisa digulir, bukan keluar layar.
+   */
+  const hitungPosisi = useCallback(() => {
+    const tombol = tombolRef.current
+    if (!tombol) return
+    const rect = tombol.getBoundingClientRect()
+    const lebar = Math.min(PANEL_WIDTH, window.innerWidth - 16)
+    const kiri = Math.min(Math.max(rect.left, 8), Math.max(8, window.innerWidth - lebar - 8))
+
+    const ruangBawah = window.innerHeight - rect.bottom - PANEL_GAP - 8
+    const ruangAtas = rect.top - PANEL_GAP - 8
+    const keAtas = ruangBawah < 200 && ruangAtas > ruangBawah
+    const tersedia = Math.max(140, keAtas ? ruangAtas : ruangBawah)
+
+    setPosisi(keAtas
+      ? { left: kiri, width: lebar, bottom: window.innerHeight - rect.top + PANEL_GAP, maxHeight: Math.min(PANEL_MAX_HEIGHT, tersedia) }
+      : { left: kiri, width: lebar, top: rect.bottom + PANEL_GAP, maxHeight: Math.min(PANEL_MAX_HEIGHT, tersedia) })
+  }, [])
+
+  const bukaPanel = () => {
+    if (buka) { setBuka(false); return }
+    hitungPosisi()
+    setBuka(true)
+  }
 
   /**
    * Jeda ketik dipasang di handler, bukan di useEffect.
@@ -103,7 +155,11 @@ export default function PilihPenulis({ ujianId, calonAwal, disabled, onPilih }: 
   useEffect(() => {
     if (!buka) return
     const diLuar = (e: MouseEvent) => {
-      if (wadahRef.current && !wadahRef.current.contains(e.target as Node)) setBuka(false)
+      const target = e.target as Node
+      // Panel dirender lewat portal, jadi bukan keturunan `wadahRef`.
+      if (wadahRef.current?.contains(target)) return
+      if (panelRef.current?.contains(target)) return
+      setBuka(false)
     }
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setBuka(false) }
     document.addEventListener("mousedown", diLuar)
@@ -113,6 +169,24 @@ export default function PilihPenulis({ ujianId, calonAwal, disabled, onPilih }: 
       document.removeEventListener("keydown", esc)
     }
   }, [buka])
+
+  // Panel fixed harus ikut bergerak saat halaman/tabel digulir atau jendela
+  // diubah ukurannya; kalau tidak, ia tertinggal di koordinat lama.
+  useEffect(() => {
+    if (!buka) return
+    hitungPosisi()
+    const perbarui = (e: Event) => {
+      // Menggulir daftar di dalam panel bukan alasan menghitung ulang.
+      if (panelRef.current && e.target instanceof Node && panelRef.current.contains(e.target)) return
+      hitungPosisi()
+    }
+    window.addEventListener("resize", perbarui)
+    window.addEventListener("scroll", perbarui, true)
+    return () => {
+      window.removeEventListener("resize", perbarui)
+      window.removeEventListener("scroll", perbarui, true)
+    }
+  }, [buka, hitungPosisi])
 
   useEffect(() => { if (buka) inputRef.current?.focus() }, [buka])
 
@@ -138,9 +212,10 @@ export default function PilihPenulis({ ujianId, calonAwal, disabled, onPilih }: 
   return (
     <div ref={wadahRef} className="relative w-full max-w-[240px]">
       <button
+        ref={tombolRef}
         type="button"
         disabled={disabled}
-        onClick={() => setBuka(v => !v)}
+        onClick={bukaPanel}
         className="text-xs px-2 py-1 w-full flex items-center gap-1 text-left disabled:opacity-50"
         style={gaya}
       >
@@ -162,10 +237,19 @@ export default function PilihPenulis({ ujianId, calonAwal, disabled, onPilih }: 
         </div>
       )}
 
-      {buka && (
+      {buka && posisi && createPortal(
         <div
-          className="absolute z-30 mt-1 w-[280px] max-w-[80vw] shadow-lg overflow-hidden"
-          style={{ ...gaya, borderRadius: 12 }}
+          ref={panelRef}
+          className="fixed z-50 shadow-lg overflow-hidden"
+          style={{
+            ...gaya,
+            borderRadius: 12,
+            left: posisi.left,
+            width: posisi.width,
+            top: posisi.top,
+            bottom: posisi.bottom,
+            maxHeight: posisi.maxHeight,
+          }}
         >
           <div className="flex items-center gap-1.5 px-2 py-1.5" style={{ borderBottom: "1px solid var(--pp-line)" }}>
             <Search size={13} className="shrink-0" style={{ color: "var(--pp-muted)" }} />
@@ -185,7 +269,7 @@ export default function PilihPenulis({ ujianId, calonAwal, disabled, onPilih }: 
             )}
           </div>
 
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-y-auto" style={{ maxHeight: Math.max(80, posisi.maxHeight - TINGGI_CARI) }}>
             <button
               type="button"
               onClick={() => void pilih(null)}
@@ -263,7 +347,8 @@ export default function PilihPenulis({ ujianId, calonAwal, disabled, onPilih }: 
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
