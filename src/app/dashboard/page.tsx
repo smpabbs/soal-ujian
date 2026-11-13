@@ -10,7 +10,7 @@ import {
   LogOut, Lock, BookOpen, ArrowRight, MessageSquare,
 } from "lucide-react"
 import { supabase } from "@/lib/supabase"
-import { ambilTugasMenulis, ambilUjianPsat, labelUjian, KESULITAN_OPTIONS, KESULITAN_LABELS, KESULITAN_LABELS_PANJANG, type PatokanUjianRow, type TugasMenulis, type UjianPsat } from "@/lib/ujian"
+import { ambilTugasMenulis, ambilUjianAktif, labelUjian, KESULITAN_OPTIONS, KESULITAN_LABELS, KESULITAN_LABELS_PANJANG, type PatokanUjianRow, type TugasMenulis, type UjianAktif } from "@/lib/ujian"
 import { ambilAksesSaya, type AksesSaya } from "@/lib/komentar"
 import ThemeToggle from "@/components/ThemeToggle"
 
@@ -68,7 +68,6 @@ export default function DashboardPage() {
   const [hasMatrix, setHasMatrix]               = useState(false)
   /** Kemampuan dari psat.akses_saya(); null berarti belum selesai dicek. */
   const [akses, setAkses]                       = useState<AksesSaya | null>(null)
-  const [submittedCount, setSubmittedCount]     = useState(0)
   const [approvedCount, setApprovedCount]       = useState(0)
   const [revisionCount, setRevisionCount]       = useState(0)
   const [mapelCounts, setMapelCounts]           = useState<Record<string, number>>({})
@@ -153,25 +152,43 @@ export default function DashboardPage() {
       const ujianIds = tugas.map(t => t.ujian_id)
       setHasMatrix(tugas.some(t => t.matrix_submitted))
 
-      const [{ count: sub }, { count: app }, { count: rev }] = await Promise.all([
-        supabase.from("bank_soal").select("*", { count: "exact", head: true }).eq("status", "submitted"),
-        supabase.from("bank_soal").select("*", { count: "exact", head: true }).eq("status", "approved"),
-        supabase.from("bank_soal").select("*", { count: "exact", head: true }).eq("status", "needs_revision"),
+      // Semua hitungan di dashboard mengikuti siklus yang sedang aktif.
+      // Tanpa ini, soal PTS yang sudah approved ikut terhitung saat PAS aktif.
+      let ujianAktif: UjianAktif[] = []
+      try {
+        ujianAktif = await ambilUjianAktif()
+      } catch (e) {
+        console.error("Gagal memuat ujian aktif:", e)
+      }
+      const activeUjianIds = ujianAktif.map(u => u.ujian_id)
+
+      const countSoal = async (status: string) => {
+        if (activeUjianIds.length === 0) return 0
+        const { count } = await supabase
+          .from("bank_soal")
+          .select("*", { count: "exact", head: true })
+          .eq("status", status)
+          .in("ujian_id", activeUjianIds)
+        return count || 0
+      }
+      const [app, rev] = await Promise.all([
+        countSoal("approved"),
+        countSoal("needs_revision"),
       ])
-      setSubmittedCount(sub || 0)
-      setApprovedCount(app || 0)
-      setRevisionCount(rev || 0)
+      setApprovedCount(app)
+      setRevisionCount(rev)
 
       // Antrean validasi dikelompokkan per ujian supaya kelasnya ikut terbaca
-      const { data: submittedByUjian } = await supabase
-        .from("bank_soal").select("ujian_id").eq("status", "submitted")
+      const { data: submittedByUjian } = activeUjianIds.length > 0
+        ? await supabase
+            .from("bank_soal").select("ujian_id").eq("status", "submitted").in("ujian_id", activeUjianIds)
+        : { data: [] as { ujian_id: string | null }[] }
       const counts: Record<string, number> = {}
       const names: Record<string, string> = {}
       const mapelDariUjian: Record<string, string | null> = {}
       if (submittedByUjian) {
         submittedByUjian.forEach(s => { if (s.ujian_id) counts[s.ujian_id] = (counts[s.ujian_id] || 0) + 1 })
-        const ujianRows = await ambilUjianPsat().catch(() => [] as UjianPsat[])
-        ujianRows.forEach(u => {
+        ujianAktif.forEach(u => {
           names[u.ujian_id] = labelUjian({ mapel_nama: u.mapel_nama, level: u.level, ujian_nama: u.ujian_nama })
           mapelDariUjian[u.ujian_id] = u.psat_mapel_id
         })

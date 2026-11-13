@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { supabase } from "@/lib/supabase"
 import { MathHtml } from "@/components/MathHtml"
 import { ArrowLeft, BookOpen, FileQuestion } from "lucide-react"
@@ -30,14 +31,64 @@ const KESULITAN_COLOR: Record<string, { bg: string; text: string }> = {
 export default async function PublikSoalPage({ params }: { params: Promise<{ ujianId: string }> }) {
   const { ujianId } = await params
 
-  const [soalRes, ujianRes] = await Promise.all([
-    supabase.rpc("get_public_soal_by_ujian", { p_ujian_id: ujianId }),
-    supabase.rpc("get_ujian_psat"),
-  ])
-
-  const soalList: Soal[] = (soalRes.data as Soal[]) ?? []
+  const ujianRes = await supabase.rpc("get_ujian_psat")
   const ujian = ((ujianRes.data as UjianPsat[]) ?? []).find(u => u.ujian_id === ujianId)
-  const mapelNama = ujian ? labelUjian(ujian) : "Mata Pelajaran"
+
+  // Halaman publik hanya untuk siklus aktif. Soal siklus lama tetap tersimpan,
+  // tetapi tidak ditampilkan lewat tautan langsung saat siklus lain aktif.
+  if (!ujian || !ujian.event_aktif) {
+    return (
+      <div style={{ backgroundColor: "var(--color-background)", minHeight: "100vh" }}>
+        <header
+          className="sticky top-0 z-10 border-b"
+          style={{ backgroundColor: "var(--color-card)", borderColor: "var(--color-border)" }}
+        >
+          <div className="max-w-4xl mx-auto px-4 py-4 flex items-center gap-4">
+            <Link
+              href="/"
+              className="flex items-center gap-1.5 text-sm"
+              style={{ color: "var(--color-muted-foreground)" }}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Kembali
+            </Link>
+            <div className="flex items-center gap-2">
+              <BookOpen className="w-5 h-5" style={{ color: "var(--color-primary)" }} />
+              <h1 className="text-base font-bold" style={{ color: "var(--color-foreground)" }}>
+                Daftar Soal
+              </h1>
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-4xl mx-auto px-4 py-8">
+          <div
+            className="rounded-lg border p-12 text-center"
+            style={{ backgroundColor: "var(--color-card)", borderColor: "var(--color-border)" }}
+          >
+            <FileQuestion className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--color-muted-foreground)" }} />
+            <p className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>
+              Siklus ujian ini tidak aktif
+            </p>
+            <p className="text-sm mt-1" style={{ color: "var(--color-muted-foreground)" }}>
+              Soal hanya ditampilkan untuk siklus ujian yang sedang aktif.
+            </p>
+            <Link
+              href="/"
+              className="inline-block mt-4 text-sm font-semibold"
+              style={{ color: "var(--color-primary)" }}
+            >
+              Kembali ke halaman utama
+            </Link>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  const soalRes = await supabase.rpc("get_public_soal_by_ujian", { p_ujian_id: ujianId })
+  const soalList: Soal[] = (soalRes.data as Soal[]) ?? []
+  const mapelNama = labelUjian(ujian)
 
   // Group by bab
   const byBab: Record<string, Soal[]> = {}
@@ -54,14 +105,14 @@ export default async function PublikSoalPage({ params }: { params: Promise<{ uji
         style={{ backgroundColor: "var(--color-card)", borderColor: "var(--color-border)" }}
       >
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center gap-4">
-          <a
+          <Link
             href="/"
             className="flex items-center gap-1.5 text-sm"
             style={{ color: "var(--color-muted-foreground)" }}
           >
             <ArrowLeft className="w-4 h-4" />
             Kembali
-          </a>
+          </Link>
           <div className="flex items-center gap-2">
             <BookOpen className="w-5 h-5" style={{ color: "var(--color-primary)" }} />
             <h1 className="text-base font-bold" style={{ color: "var(--color-foreground)" }}>

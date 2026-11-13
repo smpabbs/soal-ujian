@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { supabase } from "@/lib/supabase"
 import { ArrowLeft, LayoutGrid, Inbox } from "lucide-react"
 import { labelUjian, KESULITAN_OPTIONS, KESULITAN_LABELS, KESULITAN_LABELS_PANJANG, type UjianPsat } from "@/lib/ujian"
@@ -14,14 +15,64 @@ const TIPE_OPTIONS = ["pilgan", "ceklist", "essay", "isian_singkat", "benar_sala
 export default async function PublikMatrixPage({ params }: { params: Promise<{ ujianId: string; profileId: string }> }) {
   const { ujianId, profileId } = await params
 
-  const [matrixRes, ujianRes] = await Promise.all([
-    supabase.rpc("get_public_matrix_by_ujian", { p_ujian_id: ujianId, p_profile_id: profileId }),
-    supabase.rpc("get_ujian_psat"),
-  ])
-
-  const matrixRows: MatrixRow[] = (matrixRes.data as MatrixRow[]) ?? []
+  const ujianRes = await supabase.rpc("get_ujian_psat")
   const ujian = ((ujianRes.data as UjianPsat[]) ?? []).find(u => u.ujian_id === ujianId)
-  const mapelNama = ujian ? labelUjian(ujian) : "Mata Pelajaran"
+
+  // Halaman publik hanya untuk siklus aktif. Matrix siklus lama tetap tersimpan,
+  // tetapi tidak ditampilkan lewat tautan langsung saat siklus lain aktif.
+  if (!ujian || !ujian.event_aktif) {
+    return (
+      <div style={{ backgroundColor: "var(--color-background)", minHeight: "100vh" }}>
+        <header
+          className="sticky top-0 z-10 border-b"
+          style={{ backgroundColor: "var(--color-card)", borderColor: "var(--color-border)" }}
+        >
+          <div className="max-w-5xl mx-auto px-4 py-4 flex items-center gap-4">
+            <Link
+              href="/"
+              className="flex items-center gap-1.5 text-sm"
+              style={{ color: "var(--color-muted-foreground)" }}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Kembali
+            </Link>
+            <div className="flex items-center gap-2">
+              <LayoutGrid className="w-5 h-5" style={{ color: "var(--color-primary)" }} />
+              <h1 className="text-base font-bold" style={{ color: "var(--color-foreground)" }}>
+                Matrix Soal
+              </h1>
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-5xl mx-auto px-4 py-8">
+          <div
+            className="rounded-lg border p-12 text-center"
+            style={{ backgroundColor: "var(--color-card)", borderColor: "var(--color-border)" }}
+          >
+            <Inbox className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--color-muted-foreground)" }} />
+            <p className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>
+              Siklus ujian ini tidak aktif
+            </p>
+            <p className="text-sm mt-1" style={{ color: "var(--color-muted-foreground)" }}>
+              Matrix hanya ditampilkan untuk siklus ujian yang sedang aktif.
+            </p>
+            <Link
+              href="/"
+              className="inline-block mt-4 text-sm font-semibold"
+              style={{ color: "var(--color-primary)" }}
+            >
+              Kembali ke halaman utama
+            </Link>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  const matrixRes = await supabase.rpc("get_public_matrix_by_ujian", { p_ujian_id: ujianId, p_profile_id: profileId })
+  const matrixRows: MatrixRow[] = (matrixRes.data as MatrixRow[]) ?? []
+  const mapelNama = labelUjian(ujian)
 
   return (
     <div style={{ backgroundColor: "var(--color-background)", minHeight: "100vh" }}>
@@ -30,14 +81,14 @@ export default async function PublikMatrixPage({ params }: { params: Promise<{ u
         style={{ backgroundColor: "var(--color-card)", borderColor: "var(--color-border)" }}
       >
         <div className="max-w-5xl mx-auto px-4 py-4 flex items-center gap-4">
-          <a
+          <Link
             href="/"
             className="flex items-center gap-1.5 text-sm"
             style={{ color: "var(--color-muted-foreground)" }}
           >
             <ArrowLeft className="w-4 h-4" />
             Kembali
-          </a>
+          </Link>
           <div className="flex items-center gap-2">
             <LayoutGrid className="w-5 h-5" style={{ color: "var(--color-primary)" }} />
             <h1 className="text-base font-bold" style={{ color: "var(--color-foreground)" }}>

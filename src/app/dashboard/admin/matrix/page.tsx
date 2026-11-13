@@ -6,7 +6,7 @@ import { ArrowLeft, Trash2, LockOpen, Users } from "lucide-react"
 import ThemeToggle from "@/components/ThemeToggle"
 import Toast from "@/components/Toast"
 import { supabase } from "@/lib/supabase"
-import { ambilUjianPsat, labelUjian, type UjianPsat } from "@/lib/ujian"
+import { labelUjian, type UjianPsat } from "@/lib/ujian"
 
 interface MatrixBab {
   profile_id: string
@@ -24,12 +24,24 @@ interface GuruGroup {
   babs: MatrixBab[]
 }
 
+interface Siklus {
+  event_id: string
+  event_nama: string
+  tahun_ajaran: string | null
+  semester: number | null
+  event_aktif: boolean
+  ujian: UjianPsat[]
+}
+
 export default function AdminMatrixPage() {
   const router = useRouter()
   const [groups, setGroups] = useState<GuruGroup[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMatrix, setLoadingMatrix] = useState(false)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [unlocking, setUnlocking] = useState<string | null>(null)
+  const [siklusList, setSiklusList] = useState<Siklus[]>([])
+  const [selectedEventId, setSelectedEventId] = useState("")
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   useEffect(() => {
@@ -37,19 +49,102 @@ export default function AdminMatrixPage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push("/login"); return }
 
+      // Filter siklus ini khusus admin. RLS tetap menjadi penjaga terakhir,
+      // tetapi halaman admin tidak boleh bergantung pada URL saja.
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .single()
+      if (!profile || profile.role !== "admin") {
+        router.push("/dashboard")
+        return
+      }
+
+      // get_ujian_psat sengaja lintas event: di sini daftar event itulah yang
+      // menjadi pilihan filter siklus. Urutannya sudah tahun terbaru dulu.
+      const { data: ujianData, error } = await supabase.rpc("get_ujian_psat")
+      if (error) {
+        console.error("Gagal memuat daftar siklus:", error)
+        setLoading(false)
+        return
+      }
+      const semuaUjian = (ujianData as UjianPsat[]) ?? []
+
+      const byEvent = new Map<string, Siklus>()
+      for (const u of semuaUjian) {
+        if (!u.event_id) continue
+        let siklus = byEvent.get(u.event_id)
+        if (!siklus) {
+          siklus = {
+            event_id: u.event_id,
+            event_nama: u.event_nama || "-",
+            tahun_ajaran: u.tahun_ajaran,
+            semester: u.semester,
+            event_aktif: u.event_aktif,
+            ujian: [],
+          }
+          byEvent.set(u.event_id, siklus)
+        }
+        siklus.ujian.push(u)
+      }
+
+      const list = [...byEvent.values()]
+      list.sort((a, b) => {
+        if (a.event_aktif !== b.event_aktif) return a.event_aktif ? -1 : 1
+        const byYear = (b.tahun_ajaran || "").localeCompare(a.tahun_ajaran || "")
+        if (byYear !== 0) return byYear
+        const bySemester = (b.semester || 0) - (a.semester || 0)
+        if (bySemester !== 0) return bySemester
+        return a.event_nama.localeCompare(b.event_nama)
+      })
+      const aktif = list.find(s => s.event_aktif)
+      const defaultEvent = aktif ?? list[0]
+      setSiklusList(list)
+      setSelectedEventId(defaultEvent?.event_id ?? "")
+      setLoadingMatrix(!!defaultEvent)
+      setLoading(false)
+    }
+    load()
+  }, [router])
+
+  useEffect(() => {
+    if (!selectedEventId) return
+    const siklus = siklusList.find(s => s.event_id === selectedEventId)
+    if (!siklus) return
+
+    const ujianList = siklus.ujian
+    let cancelled = false
+
+    async function loadMatrix() {
+      setLoadingMatrix(true)
+      const ujianIds = ujianList.map(u => u.ujian_id)
+
+      if (ujianIds.length === 0) {
+        if (!cancelled) { setGroups([]); setLoadingMatrix(false) }
+        return
+      }
+
       const { data: matrixRows } = await supabase
         .from("psat_matrix_input")
         .select("profile_id, ujian_id, bab_id_text, is_submitted")
+        .in("ujian_id", ujianIds)
         .order("profile_id")
 
-      if (!matrixRows || matrixRows.length === 0) { setLoading(false); return }
+      if (cancelled) return
+      if (!matrixRows || matrixRows.length === 0) {
+        setGroups([])
+        setLoadingMatrix(false)
+        return
+      }
 
       const profileIds = [...new Set(matrixRows.map(r => r.profile_id))]
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("id, nama, email")
+        .in("id", profileIds)
 
-      const [{ data: profiles }, ujianList] = await Promise.all([
-        supabase.from("profiles").select("id, nama, email").in("id", profileIds),
-        ambilUjianPsat().catch(() => [] as UjianPsat[]),
-      ])
+      if (cancelled) return
 
       const profileMap: Record<string, { nama: string; email: string }> = {}
       profiles?.forEach(p => { profileMap[p.id] = { nama: p.nama || p.email || "Unknown", email: p.email || "" } })
@@ -82,10 +177,12 @@ export default function AdminMatrixPage() {
       })
 
       setGroups(Object.values(groupMap))
-      setLoading(false)
+      setLoadingMatrix(false)
     }
-    load()
-  }, [router])
+
+    loadMatrix()
+    return () => { cancelled = true }
+  }, [selectedEventId, siklusList])
 
   const showToast = (message: string, type: "success" | "error") => {
     setToast({ message, type })
@@ -156,6 +253,8 @@ export default function AdminMatrixPage() {
     )
   }
 
+  const siklusTerpilih = siklusList.find(s => s.event_id === selectedEventId)
+
   return (
     <div style={{ backgroundColor: "var(--pp-bg)", minHeight: "100vh" }}>
       <header
@@ -182,7 +281,7 @@ export default function AdminMatrixPage() {
         </div>
       </header>
 
-      <div className="max-w-4xl mx-auto px-4 pt-4 pb-1">
+      <div className="max-w-4xl mx-auto px-4 pt-4 pb-1 flex items-center justify-between gap-3 flex-wrap">
         <button
           onClick={() => router.push("/dashboard")}
           className="flex items-center gap-1.5 text-sm hover:opacity-70 transition-opacity"
@@ -191,10 +290,58 @@ export default function AdminMatrixPage() {
           <ArrowLeft className="w-4 h-4" />
           Kembali ke Dashboard
         </button>
+        {siklusList.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <label htmlFor="filter-siklus" className="text-xs font-semibold" style={{ color: "var(--pp-muted)" }}>
+              Siklus:
+            </label>
+            <select
+              id="filter-siklus"
+              value={selectedEventId}
+              onChange={e => setSelectedEventId(e.target.value)}
+              className="text-xs font-semibold px-3 py-2 rounded-xl"
+              style={{
+                backgroundColor: "var(--pp-card)",
+                border: "1.5px solid var(--pp-ink)",
+                color: "var(--pp-ink)",
+                fontFamily: "inherit",
+                cursor: "pointer",
+              }}
+            >
+              {siklusList.map(s => (
+                <option key={s.event_id} value={s.event_id}>
+                  {s.event_nama} · {s.tahun_ajaran}{s.event_aktif ? " (Aktif)" : ""}
+                </option>
+              ))}
+            </select>
+            {siklusTerpilih && !siklusTerpilih.event_aktif && (
+              <span
+                className="text-xs font-semibold px-2 py-1 rounded-full"
+                style={{ backgroundColor: "var(--pp-lemon)", color: "var(--pp-ink)", border: "1px solid var(--pp-ink)" }}
+              >
+                Arsip
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <main className="max-w-4xl mx-auto px-4 py-4 pb-12 space-y-4">
-        {groups.length === 0 ? (
+        {loadingMatrix ? (
+          <div
+            style={{
+              backgroundColor: "var(--pp-card)",
+              border: "1.5px solid var(--pp-ink)",
+              borderRadius: 22,
+              boxShadow: "4px 4px 0 0 var(--pp-ink)",
+              padding: "48px 24px",
+              textAlign: "center",
+            }}
+          >
+            <p className="font-display font-semibold" style={{ color: "var(--pp-ink)" }}>Memuat matrix...</p>
+            <p className="text-sm mt-1" style={{ color: "var(--pp-muted)" }}>Mengambil data untuk siklus yang dipilih.</p>
+          </div>
+        ) : groups.length === 0 ? (
           <div
             style={{
               backgroundColor: "var(--pp-card)",
@@ -217,7 +364,7 @@ export default function AdminMatrixPage() {
               <Users className="w-6 h-6" style={{ color: "var(--pp-muted)" }} />
             </div>
             <p className="font-display font-semibold" style={{ color: "var(--pp-ink)" }}>Belum Ada Data Matrix</p>
-            <p className="text-sm mt-1" style={{ color: "var(--pp-muted)" }}>Belum ada matrix yang dikirimkan oleh guru.</p>
+            <p className="text-sm mt-1" style={{ color: "var(--pp-muted)" }}>Belum ada matrix yang dikirimkan oleh guru pada siklus ini.</p>
           </div>
         ) : (
           groups.map(group => {
